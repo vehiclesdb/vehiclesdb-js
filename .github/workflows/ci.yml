@@ -116,7 +116,7 @@ jobs:
           npm pack --dry-run --json > "$RUNNER_TEMP/pack.json"
           node -e '
             const files = require(process.argv[1])[0].files.map(f => f.path).sort()
-            const want = ["CHANGELOG.md","CONTRACT.md","LICENSE","README.md","index.cjs","index.d.ts","index.mjs","package.json","resolution.cjs"]
+            const want = ["CHANGELOG.md","CONTRACT.md","LICENSE","NOTICE","README.md","index.cjs","index.d.ts","index.mjs","package.json","resolution.cjs"]
             console.log(files.join("\n"))
             if (JSON.stringify(files) !== JSON.stringify(want)) { console.error("unexpected tarball contents"); process.exit(1) }
           ' "$RUNNER_TEMP/pack.json"

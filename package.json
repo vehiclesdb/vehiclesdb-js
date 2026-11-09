@@ -23,7 +23,8 @@
     "README.md",
     "CONTRACT.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
   "sideEffects": false,
   "engines": {

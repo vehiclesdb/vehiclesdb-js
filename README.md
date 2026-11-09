@@ -284,7 +284,7 @@ out next to this repo. See [`CONTRACT.md`](./CONTRACT.md).
 
 ## License & attribution (required)
 
-**Code:** MIT — see [`LICENSE`](./LICENSE).
+**Code:** MIT — see [`LICENSE`](./LICENSE). The data notice is in [`NOTICE`](./NOTICE).
 
 **Data:** [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/), free for any
 use including commercial. **Visible credit with a link is a condition of the
