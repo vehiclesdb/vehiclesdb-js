@@ -3,6 +3,8 @@
 [![npm](https://img.shields.io/npm/v/@vehiclesdb/client.svg)](https://www.npmjs.com/package/@vehiclesdb/client)
 [![CI](https://github.com/vehiclesdb/vehiclesdb-js/actions/workflows/ci.yml/badge.svg)](https://github.com/vehiclesdb/vehiclesdb-js/actions/workflows/ci.yml)
 
+> **Get your free key, the integration guide and the credit snippet at [vehiclesdb.com](https://vehiclesdb.com/users/sign_up?for=app_saas&cta=readme_vehiclesdb_js)**
+
 `@vehiclesdb/client` gives your app the [VehiclesDB](https://vehiclesdb.com)
 dataset: makes, models, body types, popularity deciles and per-country
 availability, reconciled from official vehicle registers — and, above all, a
