@@ -329,7 +329,7 @@ export class VehiclesDBConfigError extends VehiclesDBError {
 export class VehiclesDBApiError extends VehiclesDBError {
   readonly name: string
   readonly status: number
-  /** The server's own body, parsed — e.g. `{ error: 'no_image', id: '…' }`. */
+  /** The server's own body, parsed — e.g. `{ error: 'no_render', id: '…' }`. */
   readonly body: unknown
   readonly url: string
   readonly method: string
