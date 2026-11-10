@@ -12,8 +12,9 @@
 //
 //   dataset mode  — reads the published CC-BY dataset off jsDelivr and answers
 //                   locally. Works today, no key.
-//   API mode      — used only by `images()`, the one `/v1` endpoint that is
-//                   live (documented at https://vehiclesdb.com/api).
+//   API mode      — used only by `images()`
+//                   (`GET /api/v1/vehicles/{kind}/{make}/{model}/images`,
+//                   documented at https://vehiclesdb.com/api).
 //
 // Methods for endpoints that have NOT shipped (stats, markets, plates, vin,
 // resolve/batch) are deliberately absent. A method that throws "not
@@ -32,7 +33,7 @@
 // reproducibility (see `version` in the constructor options).
 const DEFAULT_DATASET_BASE = 'https://cdn.jsdelivr.net/gh/vehiclesdb/vehiclesdb'
 
-// The API host. `/v1` lives under it.
+// The API host. The versioned API lives under `/api/v1` on it.
 const DEFAULT_API_BASE_URL = 'https://vehiclesdb.com'
 
 const DEFAULT_TIMEOUT_MS = 10000
@@ -70,6 +71,61 @@ const ATTRIBUTION = Object.freeze({
 
 const KIND_SEGMENTS = 3 // a canonical id is exactly `kind/make_slug/model_slug`
 
+// RESOLUTION.md §3a: when one nameplate answers in several kinds and the
+// caller gave no kind, the tie-break is lowest mass_decile, then this kind
+// precedence, then the id. Backtested against register counts (the van holds
+// most registrations of a car/van nameplate far more often than the car).
+const KIND_PRECEDENCE = Object.freeze(['van', 'car', 'bus', 'truck', 'moped', 'motorcycle'])
+
+// Display labels for the canonical colour palette, kinds and body types, in
+// English and Spanish. The SAME strings as the gem `vehicles` (0.9.2) and the
+// Python SDK: the slug is what you store, the label is what you show.
+const LOCALES = Object.freeze(['en', 'es'])
+const COLORS = Object.freeze([
+  ['white', '#F4F4F4', 'White', 'Blanco'],
+  ['black', '#1B1B1B', 'Black', 'Negro'],
+  ['grey', '#8A8D90', 'Grey', 'Gris'],
+  ['silver', '#C7CCD1', 'Silver', 'Plata'],
+  ['blue', '#27408B', 'Blue', 'Azul'],
+  ['red', '#B81D24', 'Red', 'Rojo'],
+  ['green', '#2E6B3E', 'Green', 'Verde'],
+  ['brown', '#5A3A22', 'Brown', 'Marrón'],
+  ['beige', '#D9C6A5', 'Beige', 'Beige'],
+  ['orange', '#E8731A', 'Orange', 'Naranja'],
+  ['yellow', '#F2C200', 'Yellow', 'Amarillo'],
+  ['gold', '#C8A951', 'Gold', 'Dorado'],
+  ['purple', '#6B3FA0', 'Purple', 'Morado'],
+  ['other', '#9AA0A6', 'Other', 'Otro']
+].map(([slug, hex, en, es]) => Object.freeze({ slug, hex, names: Object.freeze({ en, es }) })))
+// Extra spellings that land on a palette slug (normalized keys). English ones
+// mirror the gem's Colors::SYNONYMS; Spanish ones cover gender/regional forms.
+const COLOR_SYNONYMS = Object.freeze({
+  gray: 'grey', silvery: 'silver', tan: 'beige', cream: 'beige', burgundy: 'red', navy: 'blue',
+  blanca: 'white', negra: 'black', plateado: 'silver', plateada: 'silver', gris: 'grey',
+  dorada: 'gold', amarilla: 'yellow', morada: 'purple', violeta: 'purple', granate: 'red',
+  'azul marino': 'blue', crema: 'beige', otra: 'other'
+})
+const KIND_LABELS = Object.freeze({
+  car: Object.freeze({ en: 'Car', es: 'Coche' }),
+  motorcycle: Object.freeze({ en: 'Motorcycle', es: 'Moto' }),
+  moped: Object.freeze({ en: 'Moped', es: 'Ciclomotor' }),
+  van: Object.freeze({ en: 'Van', es: 'Furgoneta' }),
+  truck: Object.freeze({ en: 'Truck', es: 'Camión' }),
+  bus: Object.freeze({ en: 'Bus', es: 'Autobús' })
+})
+const BODY_TYPE_LABELS = Object.freeze({
+  hatchback: Object.freeze({ en: 'Hatchback', es: 'Compacto' }),
+  sedan: Object.freeze({ en: 'Sedan', es: 'Berlina' }),
+  wagon: Object.freeze({ en: 'Wagon', es: 'Familiar' }),
+  suv: Object.freeze({ en: 'SUV', es: 'SUV' }),
+  mpv: Object.freeze({ en: 'MPV', es: 'Monovolumen' }),
+  coupe: Object.freeze({ en: 'Coupe', es: 'Cupé' }),
+  convertible: Object.freeze({ en: 'Convertible', es: 'Descapotable' }),
+  roadster: Object.freeze({ en: 'Roadster', es: 'Roadster' }),
+  pickup: Object.freeze({ en: 'Pickup', es: 'Pick-up' }),
+  van: Object.freeze({ en: 'Van', es: 'Furgoneta' })
+})
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -96,22 +152,70 @@ class VehiclesDBConfigError extends VehiclesDBError {
 }
 
 /**
- * Any non-2xx HTTP response, from the CDN or from `/v1`. Carries the raw
- * `status` and the parsed `body` so the API's documented error shapes
- * (`{"error":"unauthorized"}`, `{"error":"no_image","id":...}`,
- * `{"error":"unknown_color","palette":[...]}`) reach the caller intact
- * instead of being flattened into a string.
+ * Any non-2xx HTTP response, from the CDN or from the API. Carries the raw
+ * `status`, the parsed `body` and the API's machine-readable `code`
+ * (`body.error`: `invalid_token`, `insufficient_credits`, `rate_limited`,
+ * `no_image`, `unknown_color`, …) so a caller can branch without parsing
+ * messages. The subclasses below cover the statuses an integration must
+ * handle differently; anything else stays a plain VehiclesDBApiError.
  */
 class VehiclesDBApiError extends VehiclesDBError {
-  constructor(message, { status, body, url, method }) {
+  constructor(message, { status, body, url, method, code = null }) {
     super(message)
     this.name = 'VehiclesDBApiError'
     this.status = status
     this.body = body
     this.url = url
     this.method = method
+    this.code = code
   }
 }
+
+/** 401/403: the key is missing, invalid, revoked, or not allowed here. */
+class VehiclesDBAuthError extends VehiclesDBApiError {
+  constructor(message, details) {
+    super(message, details)
+    this.name = 'VehiclesDBAuthError'
+  }
+}
+
+/** 402: the organization's wallet is empty. `body.billing_url` says where to top up. */
+class VehiclesDBPaymentRequiredError extends VehiclesDBApiError {
+  constructor(message, details) {
+    super(message, details)
+    this.name = 'VehiclesDBPaymentRequiredError'
+  }
+}
+
+/** 429: an abuse ceiling. `retryAfter` is in seconds (header, else body), or null. */
+class VehiclesDBRateLimitError extends VehiclesDBApiError {
+  constructor(message, details) {
+    super(message, details)
+    this.name = 'VehiclesDBRateLimitError'
+    this.retryAfter = details.retryAfter == null ? null : details.retryAfter
+  }
+}
+
+/** 404: no such resource (`no_image`, `not_found`, …; read `code`). */
+class VehiclesDBNotFoundError extends VehiclesDBApiError {
+  constructor(message, details) {
+    super(message, details)
+    this.name = 'VehiclesDBNotFoundError'
+  }
+}
+
+/** The request did not complete within `timeout` ms. */
+class VehiclesDBTimeoutError extends VehiclesDBError {
+  constructor(message, { url, timeout, cause }) {
+    super(message, { cause })
+    this.name = 'VehiclesDBTimeoutError'
+    this.url = url
+    this.timeout = timeout
+  }
+}
+
+const API_ERRORS = { 401: VehiclesDBAuthError, 403: VehiclesDBAuthError, 402: VehiclesDBPaymentRequiredError,
+  404: VehiclesDBNotFoundError, 429: VehiclesDBRateLimitError }
 
 // ---------------------------------------------------------------------------
 // Text folding
@@ -199,7 +303,9 @@ function buildMake(raw) {
     slug: raw.slug,
     name: raw.name,
     kinds: frozenList(raw.kinds),
-    aliases: frozenList(raw.aliases)
+    aliases: frozenList(raw.aliases),
+    // Slugs of makes merged into this one (dataset `former_slugs`, 2026.11.3+).
+    formerSlugs: frozenList(raw.former_slugs)
   })
 }
 
@@ -209,7 +315,7 @@ function buildMake(raw) {
  *
  * `id` is rebuilt as `kind/make_slug/model_slug`. THIS IS THE PRODUCT: it is
  * the id we want a stranger's database to store, and the same id
- * `GET /v1/vehicles/{kind}/{make}/{model}/images` is addressed by.
+ * `GET /api/v1/vehicles/{kind}/{make}/{model}/images` is addressed by.
  */
 function buildModel(raw, make) {
   return Object.freeze({
@@ -223,6 +329,15 @@ function buildModel(raw, make) {
     // vocabulary derivable from registers yet — SCHEMA.md "Body types").
     bodyType: raw.body_type == null ? null : raw.body_type,
     globalDecile: raw.global_decile == null ? null : raw.global_decile,
+    // Per-kind rank-decile of summed registrations; drives the kind-collision
+    // tie-break (RESOLUTION.md §3a). null = unranked.
+    massDecile: raw.mass_decile == null ? null : raw.mass_decile,
+    // First and last first-registration year seen in the registers: a HINT for
+    // a year picker, not production years and never a validation bound. null
+    // until the release publishes it (absence = not catalogued yet).
+    registrationYears: raw.registration_years
+      ? Object.freeze({ first: raw.registration_years.first ?? null, last: raw.registration_years.last ?? null })
+      : null,
     // dist/ publishes bare country codes here; the per-kind catalog publishes
     // the evidence behind each one. See buildModelDetail.
     availability: frozenList(raw.availability),
@@ -336,6 +451,14 @@ function buildIndex(dist) {
     makeByExact.set(exactKey(make.name), make)
   }
   for (const { make } of entries) {
+    // A merged/renamed make's old slug (dataset `former_slugs`) lands on its
+    // successor, after every real name and before nicknames.
+    for (const former of make.formerSlugs) {
+      const key = normalize(former)
+      if (key && !makeByNormalized.has(key)) makeByNormalized.set(key, make)
+    }
+  }
+  for (const { make } of entries) {
     for (const alias of make.aliases) {
       const key = normalize(alias)
       if (key && !makeByNormalized.has(key)) makeByNormalized.set(key, make)
@@ -412,31 +535,46 @@ function findMake(index, query) {
   return index.makeByExact.get(exactKey(query)) || null
 }
 
+function kindRank(kind) {
+  const i = KIND_PRECEDENCE.indexOf(kind)
+  return i === -1 ? KIND_PRECEDENCE.length : i
+}
+
 /**
- * Pick one model when a single query string exactly names several records that
- * differ ONLY by kind (Toyota's Land Cruiser is a car, a van, a truck AND a
- * bus). This is not fuzzy matching — every candidate matched exactly — it is a
- * documented, deterministic tie-break over published fields:
+ * Pick one model when the candidates are ONE nameplate in several kinds
+ * (Iveco's Daily is a bus, a truck and a van). The tie-break of RESOLUTION.md
+ * §3a, identical on every VehiclesDB surface:
  *
- *   1. lowest global decile (most popular), unranked last
- *   2. widest availability (most countries with official evidence) — the same
- *      tie-break the gem uses for `top_models` (dataset.rb:151)
- *   3. the release's own `kinds` order, so we never invent a kind hierarchy
- *   4. canonical id, so the answer is stable forever
+ *   1. lowest mass_decile, unranked last
+ *   2. kind precedence van, car, bus, truck, moped, motorcycle (any other kind
+ *      after these, ordinal)
+ *   3. canonical id, ordinal
  *
- * Pass `kind` if you care which one you get.
+ * Pass `kind` (or `kinds`) if you know which one you mean.
  */
 function pickBest(index, candidates) {
   if (candidates.length <= 1) return candidates[0] || null
-  const kindOrder = new Map(index.kinds.map((k, i) => [k, i]))
-  const rank = kind => (kindOrder.has(kind) ? kindOrder.get(kind) : Number.POSITIVE_INFINITY)
   return candidates.slice().sort(
     (a, b) =>
-      decileKey(a.globalDecile) - decileKey(b.globalDecile) ||
-      b.availability.length - a.availability.length ||
-      rank(a.kind) - rank(b.kind) ||
+      decileKey(a.massDecile) - decileKey(b.massDecile) ||
+      kindRank(a.kind) - kindRank(b.kind) ||
+      compareStrings(a.kind, b.kind) ||
       compareStrings(a.id, b.id)
   )[0]
+}
+
+/** `kinds` option → a predicate. Absent = every kind; `[]` = nothing. */
+function kindsFilter(kinds) {
+  if (kinds == null) return () => true
+  const allowed = new Set(Array.isArray(kinds) ? kinds : [kinds])
+  return model => allowed.has(model.kind)
+}
+
+const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key)
+
+function localeOf(locale) {
+  const key = exactKey(locale || 'en').split(/[-_]/)[0]
+  return LOCALES.includes(key) ? key : 'en'
 }
 
 // ---------------------------------------------------------------------------
@@ -583,6 +721,98 @@ class VehiclesDB {
     return buildModelDetail(light, record)
   }
 
+  /**
+   * A light record by canonical id, from the one dataset fetch (no catalog
+   * call, unlike `model()`). With `follow` (default) a former id lands on the
+   * record that replaced it. `kinds` is a hard filter. Unknown => null.
+   */
+  async byId(id, options) {
+    const { follow = true, kinds } = options || {}
+    const index = await this.#index()
+    // Same leniency as the Python SDK: surrounding slashes are not part of an id.
+    const key = exactKey(id).replace(/^\/+|\/+$/g, '')
+    const allowed = kindsFilter(kinds)
+    const live = index.modelById.get(key)
+    if (live) return allowed(live) ? live : null
+    if (!follow) return null
+    return pickBest(index, (index.modelsByFormerId.get(key) || []).filter(allowed))
+  }
+
+  /**
+   * The live canonical id for a stored id: the id itself when it is live, its
+   * successor when a release renamed or merged it (`former_ids`), null when
+   * this release does not know it. The one call a nightly "are my stored ids
+   * still current?" job needs.
+   */
+  async successor(id) {
+    const model = await this.byId(id, { follow: true })
+    return model ? model.id : null
+  }
+
+  /**
+   * A picker catalog: makes (name order) with their models (name order),
+   * filtered by `kind`/`kinds` and by `country` (models with register
+   * evidence there; makes with no such model are dropped). One dataset fetch.
+   *
+   *   catalog({ kind: 'car', country: 'es' })
+   *   // => [{ make: {id, name, ...}, models: [{id, name, ...}, ...] }, ...]
+   */
+  async catalog(options) {
+    const { kind, kinds, country } = options || {}
+    const index = await this.#index()
+    const allowed = kindsFilter(kinds)
+    const cc = country ? exactKey(country) : null
+    const out = []
+    for (const make of index.makes) {
+      const models = (index.modelsByMakeSlug.get(make.slug) || []).filter(m =>
+        (!kind || m.kind === kind) && allowed(m) && (!cc || m.availability.includes(cc)))
+      if (!models.length) continue
+      models.sort((a, b) => compareStrings(normalize(a.name), normalize(b.name)) || compareStrings(a.id, b.id))
+      out.push(Object.freeze({ make, models: Object.freeze(models) }))
+    }
+    return out
+  }
+
+  // --- reference labels (no I/O) ---------------------------------------------
+
+  /** The canonical colour palette, frequency-ordered: `[{slug, name, hex}]`, `name` in `locale` (en, es). */
+  colors(options) {
+    const locale = localeOf((options || {}).locale)
+    return COLORS.map(c => Object.freeze({ slug: c.slug, name: c.names[locale], hex: c.hex }))
+  }
+
+  /** `[[label, slug], ...]` for a `<select>` — the gem's `color_options`. */
+  colorOptions(options) {
+    return this.colors(options).map(c => [c.name, c.slug])
+  }
+
+  /**
+   * A palette colour from a slug or a name in any supported language
+   * ("gris", "Marrón", "navy" all land). `{slug, name, hex}` with `name` in
+   * `locale`, or null.
+   */
+  color(query, options) {
+    const q = normalize(query)
+    if (!q) return null
+    const slug = COLORS.find(c => c.slug === q || LOCALES.some(l => normalize(c.names[l]) === q))?.slug ||
+      (hasOwn(COLOR_SYNONYMS, q) ? COLOR_SYNONYMS[q] : null)
+    return slug ? this.colors(options).find(c => c.slug === slug) : null
+  }
+
+  /** "Coche" for `('car', {locale: 'es'})`. Unknown kind => null. */
+  kindLabel(kind, options) {
+    const key = exactKey(kind)
+    const labels = hasOwn(KIND_LABELS, key) ? KIND_LABELS[key] : null
+    return labels ? labels[localeOf((options || {}).locale)] : null
+  }
+
+  /** "Familiar" for `('wagon', {locale: 'es'})`. Unknown body type => null. */
+  bodyTypeLabel(bodyType, options) {
+    const key = exactKey(bodyType)
+    const labels = hasOwn(BODY_TYPE_LABELS, key) ? BODY_TYPE_LABELS[key] : null
+    return labels ? labels[localeOf((options || {}).locale)] : null
+  }
+
   /** Best effort text resolution under RESOLUTION.md. */
   async resolve(query, options = {}) {
     return (await this.#resolver()).text(query, options || {})
@@ -654,8 +884,8 @@ class VehiclesDB {
   // --- API mode ------------------------------------------------------------
 
   /**
-   * Rendered imagery for one model — the ONE `/v1` endpoint live today
-   * (`GET /v1/vehicles/{kind}/{make}/{model}/images`). API only: there is no
+   * Rendered imagery for one model
+   * (`GET /api/v1/vehicles/{kind}/{make}/{model}/images`). API only: there is no
    * imagery in the open dataset, so this throws without an `apiKey` rather
    * than returning a fake.
    *
@@ -687,12 +917,12 @@ class VehiclesDB {
         `images() wants a canonical VehiclesDB id — kind/make_slug/model_slug, e.g. "car/renault/clio" — got ${JSON.stringify(id)}`
       )
     }
-    const url = new URL(`${this.apiBaseUrl}/v1/vehicles/${parts[0]}/${parts[1]}/${parts[2]}/images`)
+    const url = new URL(`${this.apiBaseUrl}/api/v1/vehicles/${parts.map(encodeURIComponent).join('/')}/images`)
     if (color) url.searchParams.set('color', color)
     if (format) url.searchParams.set('format', format)
 
     return this.#getJson(url.toString(), {
-      // `/v1` authenticates with a bearer token (401 -> {"error":"unauthorized"}).
+      // The API authenticates with a bearer token (401 -> VehiclesDBAuthError).
       headers: { Authorization: `Bearer ${this.apiKey}`, Accept: 'application/json' },
       // Image URLs in the response are signed and key-free, so they can be put
       // straight into <img src> — never cache the payload past the caller.
@@ -760,34 +990,45 @@ class VehiclesDB {
     const controller = this.timeout > 0 ? new AbortController() : null
     const timer = controller ? setTimeout(() => controller.abort(), this.timeout) : null
 
-    let response
+    // The timer covers the body too: a server that sends headers and then
+    // stalls the body must still hit the timeout.
+    let response, body
     try {
       response = await fetchImpl(url, {
         method: 'GET',
         headers: { Accept: 'application/json', ...headers },
         signal: controller ? controller.signal : undefined
       })
+      body = await readBody(response)
     } catch (error) {
-      throw new VehiclesDBError(
-        `VehiclesDB request to ${url} failed${controller ? ` (timeout ${this.timeout}ms)` : ''}: ${error && error.message}`,
-        { cause: error }
-      )
+      if (controller && controller.signal.aborted) {
+        throw new VehiclesDBTimeoutError(`VehiclesDB request to ${url} timed out after ${this.timeout}ms`,
+          { url, timeout: this.timeout, cause: error })
+      }
+      throw new VehiclesDBError(`VehiclesDB request to ${url} failed: ${error && error.message}`, { cause: error })
     } finally {
       if (timer) clearTimeout(timer)
     }
 
-    const body = await readBody(response)
     if (!response.ok) {
       // Keep the server's own error shape intact — `{"error":"no_image","id":…}`
       // tells a caller far more than any message we could synthesize.
-      const detail = body && typeof body === 'object' && body.error ? ` ${body.error}` : ''
-      throw new VehiclesDBApiError(
-        `VehiclesDB GET ${url} -> ${response.status}${detail}`,
-        { status: response.status, body, url, method: 'GET' }
+      const code = body && typeof body === 'object' && typeof body.error === 'string' ? body.error : null
+      const ErrorClass = API_ERRORS[response.status] || VehiclesDBApiError
+      throw new ErrorClass(
+        `VehiclesDB GET ${url} -> ${response.status}${code ? ` ${code}` : ''}`,
+        { status: response.status, body, url, method: 'GET', code, retryAfter: retryAfterOf(response, body) }
       )
     }
     return body
   }
+}
+
+/** Seconds from a `Retry-After` header (delta form) or the body's `retry_after`. */
+function retryAfterOf(response, body) {
+  const header = response.headers && typeof response.headers.get === 'function' ? response.headers.get('retry-after') : null
+  const seconds = Number(header != null && header !== '' ? header : body && typeof body === 'object' ? body.retry_after : NaN)
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : null
 }
 
 /** Parse a response as JSON, falling back to text (a CDN 404 is HTML). */
@@ -809,7 +1050,13 @@ module.exports = {
   VehiclesDB,
   VehiclesDBError,
   VehiclesDBApiError,
+  VehiclesDBAuthError,
+  VehiclesDBPaymentRequiredError,
+  VehiclesDBRateLimitError,
+  VehiclesDBNotFoundError,
+  VehiclesDBTimeoutError,
   VehiclesDBConfigError,
+  KIND_PRECEDENCE,
   ATTRIBUTION,
   // Exported because it is the exact fold every id/name comparison in the
   // dataset uses; downstream code that builds its own index should use the

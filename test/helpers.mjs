@@ -78,7 +78,7 @@ function fixturePathFor(url) {
 }
 
 /**
- * A transport for the ONE live `/v1` endpoint. Dataset paths still come off
+ * A transport for the hosted API (`/api/v1/...`). Dataset paths still come off
  * disk, so a single client can do both; anything else throws.
  *
  * @param {(url: URL, init: object) => {status:number, body:unknown}} handler
@@ -89,13 +89,13 @@ export function apiFetch(handler) {
 
   const transport = async (url, init = {}) => {
     const parsed = new URL(String(url))
-    if (!parsed.pathname.startsWith('/v1/')) return datasetTransport(url, init)
+    if (!parsed.pathname.startsWith('/api/v1/')) return datasetTransport(url, init)
 
     calls.push({ url: parsed, init, headers: (init && init.headers) || {} })
-    const { status, body } = handler(parsed, init)
+    const { status, body, headers } = handler(parsed, init)
     return new Response(body === undefined ? '' : JSON.stringify(body), {
       status,
-      headers: { 'content-type': 'application/json' }
+      headers: { 'content-type': 'application/json', ...headers }
     })
   }
 

@@ -16,7 +16,7 @@ permissions:
 env:
   # The dataset release the conformance job runs against. Bump it when a new
   # release changes RESOLUTION.md or conformance/resolve.json.
-  DATASET_TAG: v2026.11.1
+  DATASET_TAG: v2026.11.2
 
 jobs:
   test:
@@ -78,9 +78,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: vehiclesdb-js
+      # The sibling SDK at the branch of the same name when one exists (a
+      # cross-SDK change lands as a PR pair), else main.
+      - name: Pick the vehiclesdb-python ref
+        id: sibling
+        run: |
+          ref="${GITHUB_HEAD_REF:-main}"
+          git ls-remote --exit-code --heads https://github.com/vehiclesdb/vehiclesdb-python "$ref" >/dev/null || ref=main
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           repository: vehiclesdb/vehiclesdb-python
+          ref: ${{ steps.sibling.outputs.ref }}
           path: vehiclesdb-python
       - uses: actions/checkout@v4
         with:

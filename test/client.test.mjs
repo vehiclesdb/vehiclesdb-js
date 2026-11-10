@@ -18,6 +18,11 @@ import {
   VehiclesDBError,
   VehiclesDBApiError,
   VehiclesDBConfigError,
+  VehiclesDBAuthError,
+  VehiclesDBPaymentRequiredError,
+  VehiclesDBRateLimitError,
+  VehiclesDBNotFoundError,
+  VehiclesDBTimeoutError,
   normalize
 } from '../index.mjs'
 import { fixtureFetch, apiFetch, readFixture, fixtureClient, FIXTURE_VERSION } from './helpers.mjs'
@@ -544,7 +549,7 @@ test('images() sends a bearer token to the documented path and parses the 200 bo
 
   assert.equal(fetchImpl.calls.length, 1)
   const { url, headers } = fetchImpl.calls[0]
-  assert.equal(url.pathname, '/v1/vehicles/car/renault/clio/images')
+  assert.equal(url.pathname, '/api/v1/vehicles/car/renault/clio/images')
   assert.equal(url.searchParams.get('color'), 'blue')
   assert.equal(url.searchParams.get('format'), 'webp')
   assert.equal(headers.Authorization, 'Bearer vdb_live_test')
@@ -583,6 +588,78 @@ test('images() surfaces the documented error bodies as VehiclesDBApiError', asyn
     () => new VehiclesDB({ apiKey: 'k', fetch: badColor }).images('car/renault/clio', { color: 'chartreuse' }),
     error => error.status === 422 && error.body.palette.includes('grey')
   )
+})
+
+test('API errors are typed by status and carry the machine-readable code', async () => {
+  const cases = [
+    [401, { error: 'invalid_token' }, VehiclesDBAuthError, undefined],
+    [402, { error: 'insufficient_credits', billing_url: 'https://vehiclesdb.com/billing' }, VehiclesDBPaymentRequiredError, undefined],
+    [404, { error: 'no_image', id: 'car/renault/clio' }, VehiclesDBNotFoundError, undefined],
+    [429, { error: 'rate_limited', retry_after: 60 }, VehiclesDBRateLimitError, { 'retry-after': '30' }],
+    [422, { error: 'unknown_color' }, VehiclesDBApiError, undefined]
+  ]
+  for (const [status, body, ErrorClass, headers] of cases) {
+    const db = new VehiclesDB({ apiKey: 'k', fetch: apiFetch(() => ({ status, body, headers })) })
+    await assert.rejects(() => db.images('car/renault/clio'), error => {
+      assert.ok(error instanceof ErrorClass, `${status} -> ${error.name}`)
+      assert.ok(error instanceof VehiclesDBApiError)
+      assert.equal(error.status, status)
+      assert.equal(error.code, body.error)
+      if (status === 429) assert.equal(error.retryAfter, 30)
+      return true
+    })
+  }
+  // No Retry-After header: the body's retry_after is used.
+  const db = new VehiclesDB({ apiKey: 'k', fetch: apiFetch(() => ({ status: 429, body: { error: 'rate_limited', retry_after: 60 } })) })
+  await assert.rejects(() => db.images('car/renault/clio'), error => error.retryAfter === 60)
+})
+
+test('a request that outlives the timeout is a VehiclesDBTimeoutError', async () => {
+  const hang = (url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted'))))
+  const db = new VehiclesDB({ apiKey: 'k', fetch: hang, timeout: 20 })
+  await assert.rejects(() => db.images('car/renault/clio'), error => {
+    assert.ok(error instanceof VehiclesDBTimeoutError)
+    assert.equal(error.timeout, 20)
+    return true
+  })
+})
+
+test('catalog() filters by kind and country; labels are localized; color() reads Spanish', async () => {
+  const { client } = await fixtureClient()
+  const all = await client.catalog({ kind: 'car' })
+  assert.ok(all.length > 0)
+  for (const { make, models } of all) {
+    assert.ok(models.length > 0, make.slug)
+    for (const m of models) assert.equal(m.kind, 'car')
+  }
+  const country = all.flatMap(e => e.models).find(m => m.availability.length)?.availability[0]
+  const scoped = await client.catalog({ kind: 'car', country: country.toUpperCase() })
+  assert.ok(scoped.length > 0)
+  for (const { models } of scoped) for (const m of models) assert.ok(m.availability.includes(country))
+  assert.deepEqual(await client.catalog({ kinds: [] }), [])
+
+  assert.equal(client.kindLabel('van', { locale: 'es' }), 'Furgoneta')
+  assert.equal(client.kindLabel('van'), 'Van')
+  assert.equal(client.kindLabel('hovercraft'), null)
+  assert.equal(client.bodyTypeLabel('wagon', { locale: 'es-ES' }), 'Familiar')
+  assert.deepEqual(client.colorOptions({ locale: 'es' })[0], ['Blanco', 'white'])
+  assert.equal(client.colors().length, 14)
+  for (const [input, slug] of [['Marrón', 'brown'], ['marron', 'brown'], ['gris', 'grey'], ['GRAY', 'grey'], ['plateado', 'silver'], ['red', 'red']]) {
+    assert.equal(client.color(input)?.slug, slug, input)
+  }
+  assert.equal(client.color('rojo', { locale: 'es' }).name, 'Rojo')
+  assert.equal(client.color('chartreuse'), null)
+  assert.equal(client.color('constructor'), null)
+  assert.equal(client.kindLabel('constructor'), null)
+  assert.equal(client.bodyTypeLabel('toString'), null)
+  assert.equal((await client.byId('/car/volkswagen/golf/')).id, 'car/volkswagen/golf')
+})
+
+test('the timeout also covers a stalled response body', async () => {
+  const stall = (url, init) => Promise.resolve({ ok: true, status: 200, headers: new Headers(),
+    text: () => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted')))) })
+  const db = new VehiclesDB({ apiKey: 'k', fetch: stall, timeout: 20 })
+  await assert.rejects(() => db.images('car/renault/clio'), VehiclesDBTimeoutError)
 })
 
 test('images() rejects anything that is not a canonical id', async () => {

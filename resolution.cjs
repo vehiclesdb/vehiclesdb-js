@@ -5,6 +5,9 @@ const CONFIDENCE = { exact: 1, former_id: .98, fold: .97, alias: .93, form: .92,
 const FILLERS = new Set('nuevo nueva new neu neue nouveau nouvelle nuovo nuova novo nova'.split(' '))
 const rawKey = s => String(s ?? '').trim().toLowerCase()
 const unique = xs => [...new Map(xs.map(x => [x.id, x])).values()]
+// RESOLUTION.md §3a: `kinds` is a hard constraint on every rung; [] = nothing.
+const inKinds = (options, model) => options.kinds == null ||
+  (Array.isArray(options.kinds) ? options.kinds : [options.kinds]).includes(model.kind)
 const eligible = raw => {
   const s = String(raw ?? '').trim()
   return s.split(/\s+/).every(token => !(/[/_+\\]/.test(token) || /^-|-$|--/.test(token) || /^[a-z0-9]+(?:-[a-z0-9]+)+$/.test(token) || /^[A-Z0-9]+(?:-[A-Z0-9]+)+$/.test(token)))
@@ -79,6 +82,9 @@ class Resolver {
     const trail = Object.freeze(via.slice())
     return Object.freeze({ id: model?.id ?? null, kind: model?.kind ?? null, make: model?.makeName ?? null,
       model: model?.name ?? null, method, matchedOn: method, confidence: score, source: 'dataset',
+      // Safe to auto-apply to stored data: an answer, from curated data or a
+      // conservative cleanup — not a typo guess, not ambiguous.
+      confident: !ambiguous && method !== 'fuzzy',
       match, ambiguous, candidates, alternates: Object.freeze(hits.filter(x => x.id !== model?.id)),
       via: trail, resolvedVia: trail })
   }
@@ -86,6 +92,8 @@ class Resolver {
     const q = this.norm(raw), key = rawKey(raw)
     let make = this.index.makes.find(m => q && [m.name, m.slug].some(s => this.norm(s) === q))
     if (make) return { make, via: [], typo: false }
+    make = q && this.index.makes.find(m => m.formerSlugs.some(f => this.norm(f) === q))
+    if (make) return { make, via: [`former_make_slug:${q}→${make.slug}`], typo: false }
     make = this.index.makes.find(m => m.aliases.some(a => q ? this.norm(a) === q : key && rawKey(a) === key))
     if (make) return { make, via: q ? [`make_alias:${q}→${make.slug}`] : [], typo: false }
     if (!fuzzy || !eligible(raw) || q.length < 4) return null
@@ -106,7 +114,7 @@ class Resolver {
     return { make, via: [`make_typo:${q}→${make.slug}`], typo: true }
   }
   scope(make, options) {
-    return this.scopes.get(make.slug).filter(e => (!options.kind || e.model.kind === options.kind) &&
+    return this.scopes.get(make.slug).filter(e => (!options.kind || e.model.kind === options.kind) && inKinds(options, e.model) &&
       (!options.country || e.model.availability.includes(rawKey(options.country))))
   }
   rungs(entries, query, via, cap) {
@@ -198,10 +206,11 @@ class Resolver {
   text(raw, options = {}) {
     raw = String(raw ?? '').trim()
     if (!raw) return null
-    const allowed = m => (!options.kind || m.kind === options.kind) && (!options.country || m.availability.includes(rawKey(options.country)))
+    const allowed = m => (!options.kind || m.kind === options.kind) && inKinds(options, m) &&
+      (!options.country || m.availability.includes(rawKey(options.country)))
     const hint = options.kind ? [`kind_hint:${options.kind}`] : []
     const byId = (hits, method) => {
-      hits = hits.filter(m => !options.country || m.availability.includes(rawKey(options.country)))
+      hits = hits.filter(m => inKinds(options, m) && (!options.country || m.availability.includes(rawKey(options.country))))
       if (!hits.length) return null
       const via = hint.concat(`${method}:${raw}`)
       if (new Set(hits.map(m => `${m.makeId}/${m.slug}`)).size > 1) return this.result(hits, method, via, { ambiguous: true })

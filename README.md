@@ -67,8 +67,8 @@ lazily, on the first question you ask, and memoized on the instance.
 | | dataset mode | API mode |
 |---|---|---|
 | **Needs a key** | no | yes (`apiKey`) |
-| **Where the answer comes from** | the published CC-BY dataset on jsDelivr | `https://vehiclesdb.com/v1` |
-| **Methods** | `makes` `models` `model` `resolve` `search` | `images` |
+| **Where the answer comes from** | the published CC-BY dataset on jsDelivr | `https://vehiclesdb.com/api/v1` |
+| **Methods** | `makes` `models` `model` `byId` `successor` `catalog` `resolve` `modelMatch` `search`, labels | `images` |
 | **Works offline-ish** | yes — one file, then everything is in memory | no |
 | **Freshness** | the release you pinned (or `latest`) | live |
 
@@ -76,7 +76,7 @@ Every method except `images()` answers from the dataset today. `images()` is
 API-only — there is no imagery in the open dataset, so it throws a
 `VehiclesDBConfigError` naming `apiKey` rather than returning a placeholder.
 
-Methods for `/v1` endpoints that have **not shipped** (`stats`, `markets`,
+Methods for API endpoints that have **not shipped** (`stats`, `markets`,
 `plates`, `vin`, `resolve/batch`) are deliberately absent. A method that throws
 "not implemented yet" is worse than no method: it invites integrations onto
 semantics that do not exist.
@@ -100,9 +100,15 @@ new VehiclesDB({
 | `makes({ kind })` | `Make[]` | name-alphabetical; `kind` filters on the make's own `kinds[]` |
 | `models(make, { kind, bodyType })` | `Model[]` | alias-aware make lookup; **unknown make ⇒ `[]`, never throws** |
 | `model(id)` / `model(kind, make, slug)` | `ModelDetail \| null` | honours `former_ids`; pulls the per-kind catalog |
-| `resolve(query, { kind, country })` | `Resolution \| null` | free text; the resolution ladder below |
-| `modelMatch(make, model, { kind, country })` | `Resolution \| null` | a make/model pair, e.g. two columns of a spreadsheet |
+| `resolve(query, { kind, kinds, country })` | `Resolution \| null` | free text; the resolution ladder below |
+| `modelMatch(make, model, { kind, kinds, country })` | `Resolution \| null` | a make/model pair, e.g. two columns of a spreadsheet |
 | `search(query, { kind, limit })` | `Model[]` | ranked; deterministic |
+| `byId(id, { follow, kinds })` | `Model \| null` | one dataset fetch; follows former ids unless `follow: false` |
+| `successor(id)` | `string \| null` | the live id for a stored id (itself, its successor, or `null`) |
+| `catalog({ kind, kinds, country })` | `{ make, models }[]` | picker data, name-ordered; `country` keeps models with register evidence there |
+| `colors({ locale })` / `colorOptions({ locale })` | palette | 14 canonical colours; `en` or `es` names |
+| `color(query, { locale })` | `Color \| null` | slug or English/Spanish name: `'gris'`, `'Marrón'`, `'navy'` |
+| `kindLabel(kind, { locale })` / `bodyTypeLabel(type, { locale })` | `string \| null` | `'Furgoneta'`, `'Familiar'` |
 | `images(id, { color, format })` | the endpoint's JSON | API only |
 | `attribution` | `Attribution` | the CC-BY notice, programmatically |
 | `datasetVersion()` | `string` | e.g. `'2026.11.1'` — cite it |
@@ -133,6 +139,29 @@ Confidences label rungs. They are not probabilities. When two records fit
 equally well, the answer is not guessed: the result has `ambiguous: true`, a
 null `id` and the competing records in `alternates`. When nothing matches, the
 answer is `null`. The full rules are in [`CONTRACT.md`](./CONTRACT.md#resolution).
+
+`confident` is `true` when the answer is neither ambiguous nor a typo guess —
+the recommended bar for rewriting stored data without a human.
+
+**Kinds.** Some nameplates are published in several kinds (the Iveco Daily is a
+bus, a truck and a van). Without a kind, every VehiclesDB surface picks the
+same one: lowest `mass_decile`, then van, car, bus, truck, moped, motorcycle
+([RESOLUTION.md §3a](https://github.com/vehiclesdb/vehiclesdb/blob/main/RESOLUTION.md)).
+Say what you mean when you know it:
+
+```js
+await db.resolve('Iveco Daily')                       // 'van/iveco/daily'
+await db.resolve('Iveco Daily', { kind: 'truck' })    // 'truck/iveco/daily'
+await db.resolve('bus/iveco/daily', { kinds: ['car'] }) // null: kinds is a hard filter, ids included
+```
+
+**Stored ids.** Store `id`. When a release renames a record, its old id
+becomes a `former_id` of the new one; `successor(oldId)` gives you the id to
+store now, and `byId(oldId)` the record.
+
+```js
+await db.successor('car/alfa-romeo/1750gtv')   // 'car/alfa-romeo/1750-gtv'
+```
 
 ### `search()` ranking
 
@@ -177,7 +206,7 @@ form.
 
 `Make` has no `countries` in dataset mode: that field lives only in
 `catalog/{kind}/makes.json`, and `makes()` is contractually a **single** fetch of
-the light dataset. It arrives with `GET /v1/makes`.
+the light dataset.
 
 ## Pinning a release
 
@@ -200,33 +229,44 @@ disagree about what "the dataset" is.
 ## Errors
 
 ```js
-const { VehiclesDBError, VehiclesDBApiError, VehiclesDBConfigError } = require('@vehiclesdb/client')
+const { VehiclesDBError, VehiclesDBApiError, VehiclesDBAuthError, VehiclesDBPaymentRequiredError,
+  VehiclesDBRateLimitError, VehiclesDBNotFoundError, VehiclesDBTimeoutError,
+  VehiclesDBConfigError } = require('@vehiclesdb/client')
 ```
 
 - `VehiclesDBConfigError` — a required option is missing; `.option` names it
   (`'apiKey'`, `'fetch'`).
-- `VehiclesDBApiError` — any non-2xx, from the CDN or from `/v1`. Carries
-  `.status` and the server's own parsed `.body`, so the documented shapes reach
-  you intact: `{ error: 'unauthorized' }` (401),
-  `{ error: 'no_image', id: '…' }` (404),
-  `{ error: 'unknown_color', palette: [...] }` (422).
-- `VehiclesDBError` — the base class, and what a network failure or timeout
+- `VehiclesDBApiError` — any non-2xx, from the CDN or from the API. Carries
+  `.status`, the server's own parsed `.body`, and `.code` (the body's `error`
+  string, e.g. `'no_image'`, `'unknown_color'`). Subclasses for the statuses
+  you handle differently:
+  - `VehiclesDBAuthError` — 401/403: missing, invalid or revoked key, or a
+    publishable key used from a site it is not allowed on.
+  - `VehiclesDBPaymentRequiredError` — 402 `insufficient_credits`: the wallet
+    is empty; `.body.billing_url` says where to top up.
+  - `VehiclesDBRateLimitError` — 429 `rate_limited`; `.retryAfter` in seconds.
+  - `VehiclesDBNotFoundError` — 404 (`no_image`, `not_found`, …).
+- `VehiclesDBTimeoutError` — no response within `timeout` ms (`.timeout`, `.url`).
+- `VehiclesDBError` — the base class, and what any other network failure
   becomes (with the original error as `.cause`).
 
 ```js
 try {
   await db.images('car/volkswagen/passat')
 } catch (error) {
-  if (error instanceof VehiclesDBApiError && error.body?.error === 'no_image') {
+  if (error instanceof VehiclesDBNotFoundError) {
     // no render for this model yet — show your placeholder
-  }
+  } else if (error instanceof VehiclesDBAuthError || error instanceof VehiclesDBPaymentRequiredError) {
+    // alert someone: every image call will fail until the key or wallet is fixed
+  } else throw error
 }
 ```
 
 ## Imagery (`images()`)
 
-`GET /v1/vehicles/{kind}/{make}/{model}/images` is the one `/v1` endpoint live
-today. Mint a key at <https://vehiclesdb.com/settings/api-keys>.
+`GET /api/v1/vehicles/{kind}/{make}/{model}/images`. Mint a key at
+<https://vehiclesdb.com/settings/api-keys>. (0.1.0 called `/v1/...`, which is
+not the API's path; upgrade.)
 
 ```js
 const db = new VehiclesDB({ apiKey: process.env.VEHICLESDB_API_KEY })
@@ -328,5 +368,8 @@ Prefer not to credit VehiclesDB? That is the commercial licence →
   ([repo](https://github.com/vehiclesdb/vehiclesdb-python)), same contract.
 - [`vehiclesdb/vehiclesdb`](https://github.com/vehiclesdb/vehiclesdb) — the
   open dataset itself (`SCHEMA.md`, `RESOLUTION.md`, `ATTRIBUTION.md`).
+- [`make-model-dropdown`](https://github.com/vehiclesdb/make-model-dropdown) —
+  the browser make → model picker; same resolution contract, offline dataset
+  mode, a hidden id field, and an ES module for importmaps.
 - [`CONTRACT.md`](./CONTRACT.md) — what every VehiclesDB SDK promises.
 - [`CHANGELOG.md`](./CHANGELOG.md)
