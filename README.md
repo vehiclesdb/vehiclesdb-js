@@ -368,5 +368,8 @@ Prefer not to credit VehiclesDB? That is the commercial licence →
   ([repo](https://github.com/vehiclesdb/vehiclesdb-python)), same contract.
 - [`vehiclesdb/vehiclesdb`](https://github.com/vehiclesdb/vehiclesdb) — the
   open dataset itself (`SCHEMA.md`, `RESOLUTION.md`, `ATTRIBUTION.md`).
+- [`make-model-dropdown`](https://github.com/vehiclesdb/make-model-dropdown) —
+  the browser make → model picker; same resolution contract, offline dataset
+  mode, a hidden id field, and an ES module for importmaps.
 - [`CONTRACT.md`](./CONTRACT.md) — what every VehiclesDB SDK promises.
 - [`CHANGELOG.md`](./CHANGELOG.md)

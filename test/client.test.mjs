@@ -649,6 +649,17 @@ test('catalog() filters by kind and country; labels are localized; color() reads
   }
   assert.equal(client.color('rojo', { locale: 'es' }).name, 'Rojo')
   assert.equal(client.color('chartreuse'), null)
+  assert.equal(client.color('constructor'), null)
+  assert.equal(client.kindLabel('constructor'), null)
+  assert.equal(client.bodyTypeLabel('toString'), null)
+  assert.equal((await client.byId('/car/volkswagen/golf/')).id, 'car/volkswagen/golf')
+})
+
+test('the timeout also covers a stalled response body', async () => {
+  const stall = (url, init) => Promise.resolve({ ok: true, status: 200, headers: new Headers(),
+    text: () => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted')))) })
+  const db = new VehiclesDB({ apiKey: 'k', fetch: stall, timeout: 20 })
+  await assert.rejects(() => db.images('car/renault/clio'), VehiclesDBTimeoutError)
 })
 
 test('images() rejects anything that is not a canonical id', async () => {

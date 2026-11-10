@@ -570,6 +570,8 @@ function kindsFilter(kinds) {
   return model => allowed.has(model.kind)
 }
 
+const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key)
+
 function localeOf(locale) {
   const key = exactKey(locale || 'en').split(/[-_]/)[0]
   return LOCALES.includes(key) ? key : 'en'
@@ -727,7 +729,8 @@ class VehiclesDB {
   async byId(id, options) {
     const { follow = true, kinds } = options || {}
     const index = await this.#index()
-    const key = exactKey(id)
+    // Same leniency as the Python SDK: surrounding slashes are not part of an id.
+    const key = exactKey(id).replace(/^\/+|\/+$/g, '')
     const allowed = kindsFilter(kinds)
     const live = index.modelById.get(key)
     if (live) return allowed(live) ? live : null
@@ -792,19 +795,21 @@ class VehiclesDB {
     const q = normalize(query)
     if (!q) return null
     const slug = COLORS.find(c => c.slug === q || LOCALES.some(l => normalize(c.names[l]) === q))?.slug ||
-      COLOR_SYNONYMS[q]
+      (hasOwn(COLOR_SYNONYMS, q) ? COLOR_SYNONYMS[q] : null)
     return slug ? this.colors(options).find(c => c.slug === slug) : null
   }
 
   /** "Coche" for `('car', {locale: 'es'})`. Unknown kind => null. */
   kindLabel(kind, options) {
-    const labels = KIND_LABELS[exactKey(kind)]
+    const key = exactKey(kind)
+    const labels = hasOwn(KIND_LABELS, key) ? KIND_LABELS[key] : null
     return labels ? labels[localeOf((options || {}).locale)] : null
   }
 
   /** "Familiar" for `('wagon', {locale: 'es'})`. Unknown body type => null. */
   bodyTypeLabel(bodyType, options) {
-    const labels = BODY_TYPE_LABELS[exactKey(bodyType)]
+    const key = exactKey(bodyType)
+    const labels = hasOwn(BODY_TYPE_LABELS, key) ? BODY_TYPE_LABELS[key] : null
     return labels ? labels[localeOf((options || {}).locale)] : null
   }
 
@@ -985,13 +990,16 @@ class VehiclesDB {
     const controller = this.timeout > 0 ? new AbortController() : null
     const timer = controller ? setTimeout(() => controller.abort(), this.timeout) : null
 
-    let response
+    // The timer covers the body too: a server that sends headers and then
+    // stalls the body must still hit the timeout.
+    let response, body
     try {
       response = await fetchImpl(url, {
         method: 'GET',
         headers: { Accept: 'application/json', ...headers },
         signal: controller ? controller.signal : undefined
       })
+      body = await readBody(response)
     } catch (error) {
       if (controller && controller.signal.aborted) {
         throw new VehiclesDBTimeoutError(`VehiclesDB request to ${url} timed out after ${this.timeout}ms`,
@@ -1002,7 +1010,6 @@ class VehiclesDB {
       if (timer) clearTimeout(timer)
     }
 
-    const body = await readBody(response)
     if (!response.ok) {
       // Keep the server's own error shape intact — `{"error":"no_image","id":…}`
       // tells a caller far more than any message we could synthesize.
