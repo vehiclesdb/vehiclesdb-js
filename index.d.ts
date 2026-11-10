@@ -23,8 +23,7 @@ export type ResolutionSource = 'dataset' | 'api'
  * A make, as published in `dist/vehicles.json`.
  *
  * No `countries`: that field lives only in `catalog/{kind}/makes.json`, and
- * `makes()` is contractually one fetch of the light dataset. It arrives when
- * `GET /v1/makes` ships.
+ * `makes()` is contractually one fetch of the light dataset.
  */
 export interface Make {
   /** Same string as `slug` — `catalog/{kind}/makes.json` publishes both, identical. */
@@ -35,6 +34,8 @@ export interface Make {
   readonly kinds: readonly Kind[]
   /** Published nicknames/initialisms/native scripts. `[]` = none curated. */
   readonly aliases: readonly string[]
+  /** Slugs of makes merged into this one (dataset 2026.11.3+). `[]` = none. */
+  readonly formerSlugs: readonly string[]
 }
 
 /**
@@ -54,6 +55,14 @@ export interface ModelIdentity {
   readonly bodyType: string | null
   /** 1 = top 10% worldwide … 10. `null` = unranked, and unranked sorts last. */
   readonly globalDecile: number | null
+  /** Per-kind decile of summed registrations (1 = most). Drives the kind tie-break. */
+  readonly massDecile: number | null
+  /**
+   * First and last first-registration year seen in the registers — a HINT for a
+   * year picker, not production years, never a validation bound. `null` until
+   * the release publishes it.
+   */
+  readonly registrationYears: { readonly first: number | null; readonly last: number | null } | null
   /** Continent rollup of `availability`: `eu` `na` `sa` `as` `oc` `af`. */
   readonly regions: readonly string[]
   /** Published alternate names ("Rabbit", "Käfer", "カローラ"). */
@@ -134,6 +143,8 @@ export interface Resolution {
   /** @deprecated Use method. */
   readonly matchedOn: ResolutionMethod
   readonly confidence: number
+  /** Safe to auto-apply to stored data: not ambiguous and not a typo guess (`method !== 'fuzzy'`). */
+  readonly confident: boolean
   readonly source: ResolutionSource
   readonly match: ResolutionMatch | null
   readonly ambiguous: boolean
@@ -152,7 +163,7 @@ export interface ImageVariant {
 }
 
 /**
- * The verbatim 200 body of `GET /v1/vehicles/{kind}/{make}/{model}/images`.
+ * The verbatim 200 body of `GET /api/v1/vehicles/{kind}/{make}/{model}/images`.
  * snake_case on purpose: this is a shipped wire contract documented at
  * https://vehiclesdb.com/api, not a shape this package gets to rename.
  */
@@ -249,9 +260,43 @@ export interface ModelsOptions {
 }
 
 export interface ResolveOptions {
+  /** Scopes the name rungs to one kind; an explicit id still answers (RESOLUTION.md §3a). */
   kind?: Kind
+  /** Hard constraint on every rung, ids included. `[]` matches nothing. */
+  kinds?: readonly Kind[]
   /** ISO-3166 alpha-2. Restricts candidates to that market's evidence. */
   country?: string
+}
+
+export interface ByIdOptions {
+  /** Follow `former_ids` to the record that replaced the id. Default `true`. */
+  follow?: boolean
+  kinds?: readonly Kind[]
+}
+
+export interface CatalogOptions {
+  kind?: Kind
+  kinds?: readonly Kind[]
+  /** ISO-3166 alpha-2: only models with register evidence there. */
+  country?: string
+}
+
+export interface CatalogEntry {
+  readonly make: Make
+  readonly models: readonly Model[]
+}
+
+export type Locale = 'en' | 'es' | string
+
+export interface LabelOptions {
+  /** `en` (default) or `es`; region suffixes (`es-ES`) are ignored; others fall back to `en`. */
+  locale?: Locale
+}
+
+export interface Color {
+  readonly slug: string
+  readonly name: string
+  readonly hex: string
 }
 
 export interface SearchOptions {
@@ -280,15 +325,36 @@ export class VehiclesDBConfigError extends VehiclesDBError {
   readonly option: string
 }
 
-/** Any non-2xx HTTP response, from the CDN or from `/v1`. */
+/** Any non-2xx HTTP response, from the CDN or from the API. */
 export class VehiclesDBApiError extends VehiclesDBError {
-  readonly name: 'VehiclesDBApiError'
+  readonly name: string
   readonly status: number
   /** The server's own body, parsed — e.g. `{ error: 'no_image', id: '…' }`. */
   readonly body: unknown
   readonly url: string
   readonly method: string
+  /** `body.error` when the API sent one (`invalid_token`, `insufficient_credits`, `rate_limited`, …). */
+  readonly code: string | null
 }
+
+/** 401/403: missing, invalid or revoked key, or a key not allowed from here. */
+export class VehiclesDBAuthError extends VehiclesDBApiError {}
+/** 402: the organization is out of API credits. */
+export class VehiclesDBPaymentRequiredError extends VehiclesDBApiError {}
+/** 404: unknown resource or no image (`code` says which). */
+export class VehiclesDBNotFoundError extends VehiclesDBApiError {}
+/** 429: an abuse ceiling; retry after `retryAfter` seconds. */
+export class VehiclesDBRateLimitError extends VehiclesDBApiError {
+  readonly retryAfter: number | null
+}
+/** The request did not finish within `timeout` ms. */
+export class VehiclesDBTimeoutError extends VehiclesDBError {
+  readonly url: string
+  readonly timeout: number
+}
+
+/** The kind precedence of the kind-collision tie-break (RESOLUTION.md §3a). */
+export const KIND_PRECEDENCE: readonly Kind[]
 
 export class VehiclesDB {
   constructor(options?: VehiclesDBOptions)
@@ -311,6 +377,20 @@ export class VehiclesDB {
   /** Honours `former_ids`. Unknown => `null`. */
   model(id: string): Promise<ModelDetail | null>
   model(kind: string, make: string, slug: string): Promise<ModelDetail | null>
+  /** A light record by id (one dataset fetch); follows former ids by default. Unknown => `null`. */
+  byId(id: string, options?: ByIdOptions): Promise<Model | null>
+  /** The live id for a stored id: itself, its successor, or `null`. */
+  successor(id: string): Promise<string | null>
+  /** Makes with their models, filtered by kind(s) and country, name-ordered. */
+  catalog(options?: CatalogOptions): Promise<CatalogEntry[]>
+  /** The canonical 14-colour palette with localized names. */
+  colors(options?: LabelOptions): Color[]
+  /** `[[label, slug], ...]` for a select. */
+  colorOptions(options?: LabelOptions): [string, string][]
+  /** A palette colour from a slug or an English/Spanish name or synonym. */
+  color(query: string, options?: LabelOptions): Color | null
+  kindLabel(kind: string, options?: LabelOptions): string | null
+  bodyTypeLabel(bodyType: string, options?: LabelOptions): string | null
   /** RESOLUTION.md ladder, preserving ambiguity. */
   resolve(query: string, options?: ResolveOptions): Promise<Resolution | null>
   modelMatch(make: string, model: string, options?: ResolveOptions): Promise<Resolution | null>
@@ -328,7 +408,13 @@ declare const _default: {
   VehiclesDB: typeof VehiclesDB
   VehiclesDBError: typeof VehiclesDBError
   VehiclesDBApiError: typeof VehiclesDBApiError
+  VehiclesDBAuthError: typeof VehiclesDBAuthError
+  VehiclesDBPaymentRequiredError: typeof VehiclesDBPaymentRequiredError
+  VehiclesDBNotFoundError: typeof VehiclesDBNotFoundError
+  VehiclesDBRateLimitError: typeof VehiclesDBRateLimitError
+  VehiclesDBTimeoutError: typeof VehiclesDBTimeoutError
   VehiclesDBConfigError: typeof VehiclesDBConfigError
+  KIND_PRECEDENCE: readonly Kind[]
   ATTRIBUTION: Attribution
   normalize: typeof normalize
 }

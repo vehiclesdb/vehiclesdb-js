@@ -1,6 +1,6 @@
 {
   "name": "@vehiclesdb/client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Vehicle makes, models and canonical vehicle ids (kind/make/model) from the open VehiclesDB dataset. Zero dependencies, ESM + CJS, works offline against the published CC-BY data.",
   "type": "commonjs",
   "main": "./index.cjs",

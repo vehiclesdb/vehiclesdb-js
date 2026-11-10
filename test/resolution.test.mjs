@@ -93,7 +93,7 @@ test('forms from supplied release are make-scoped and outrank cleanup/typos', { 
 test('published resolution conformance', { skip: !fs.existsSync(conformancePath) && `absent: ${conformancePath}` }, async t => {
   const data = JSON.parse(fs.readFileSync(conformancePath, 'utf8'))
   for (const [i, c] of (Array.isArray(data) ? data : data.cases).entries()) await t.test(`${i}: ${c.input || c.make + ' | ' + c.model}`, {skip: c.min_dataset && older(dist.version, c.min_dataset) ? `needs dataset ${c.min_dataset}` : false}, async () => {
-    const r = c.entry === 'pair' ? await db.modelMatch(c.make, c.model, {kind:c.kind}) : await db.resolve(c.input, {kind:c.kind})
+    const r = c.entry === 'pair' ? await db.modelMatch(c.make, c.model, {kind:c.kind, kinds:c.kinds}) : await db.resolve(c.input, {kind:c.kind, kinds:c.kinds})
     if (c.expect === 'ambiguous') { assert.equal(r?.ambiguous, true); assert.equal(r.match, null); assert.ok(r.alternates.length > 1) }
     else if (c.expect === null) assert.equal(r, null)
     else { assert.equal(r?.id, c.expect); assert.equal(r.ambiguous, false) }
@@ -163,4 +163,59 @@ test('text matcher uses exact-first splits, name guard, record-level aliases and
   assert.deepEqual((await local.resolve('car/example/old')).via, ['former_id:car/example/old'])
   assert.equal((await local.resolve('car/example/collision', {kind:'van'})).ambiguous, true)
   assert.equal(await local.resolve('example+ alphi'), null)
+})
+
+test('kind collisions: one tie-break (RESOLUTION §3a), kinds is a hard filter, confident', async () => {
+  const data = { version: '1', kinds: ['bus', 'car', 'moped', 'motorcycle', 'truck', 'van'], makes: [
+    { name: 'Iveco', slug: 'iveco', models: [
+      { name: 'Daily', slug: 'daily', kind: 'bus', global_decile: 2, mass_decile: 1, forms: ['Turbo', 'Turbodaily'] },
+      { name: 'Daily', slug: 'daily', kind: 'truck', global_decile: 1, mass_decile: 1, forms: ['Turbo', 'Turbodaily'] },
+      { name: 'Daily', slug: 'daily', kind: 'van', global_decile: 3, mass_decile: 1, forms: ['Turbodaily'], former_ids: ['van/iveco/35s'] }
+    ] },
+    { name: 'Mercedes-Benz', slug: 'mercedes-benz', models: [
+      { name: 'V-Class', slug: 'v-class', kind: 'car', mass_decile: 1 },
+      { name: 'V-Class', slug: 'v-class', kind: 'van', global_decile: 1, mass_decile: 2 }
+    ] },
+    { name: 'Toyota', slug: 'toyota', models: [
+      { name: 'Corolla', slug: 'corolla', kind: 'car' }, { name: 'Corona', slug: 'corona', kind: 'car' }
+    ] }
+  ] }
+  const local = client(data)
+  // Unhinted: mass_decile ties → van, never the car-first or global_decile answer.
+  for (const r of [await local.resolve('iveco daily'), await local.modelMatch('Iveco', 'Daily')]) {
+    assert.equal(r.id, 'van/iveco/daily'); assert.equal(r.ambiguous, false); assert.equal(r.method, 'fold')
+    assert.deepEqual(r.alternates.map(m => m.kind).sort(), ['bus', 'truck'])
+  }
+  assert.equal((await local.modelMatch('Mercedes-Benz', 'V-Class')).id, 'car/mercedes-benz/v-class')
+  // Forms: only the records that carry the form compete (never widened).
+  assert.equal((await local.modelMatch('Iveco', 'Turbodaily')).id, 'van/iveco/daily')
+  assert.equal((await local.modelMatch('Iveco', 'Turbo')).id, 'bus/iveco/daily')
+  // A typo tie between kinds of one nameplate is a collision, not ambiguity.
+  const typo = await local.modelMatch('Iveco', 'Dialy')
+  assert.equal(typo.id, 'van/iveco/daily'); assert.equal(typo.method, 'fuzzy'); assert.equal(typo.confident, false)
+  assert.equal((await local.modelMatch('Toyota', 'Corola')).ambiguous, true)
+  // kind scopes the name rungs; kinds constrains every rung.
+  assert.equal((await local.resolve('iveco daily', { kind: 'truck' })).id, 'truck/iveco/daily')
+  assert.equal((await local.resolve('iveco daily', { kinds: ['truck', 'bus'] })).id, 'bus/iveco/daily')
+  assert.equal(await local.resolve('iveco daily', { kinds: [] }), null)
+  assert.equal(await local.resolve('bus/iveco/daily', { kinds: ['car'] }), null)
+  assert.equal((await local.resolve('bus/iveco/daily', { kind: 'car' })).id, 'bus/iveco/daily')
+  assert.equal((await local.resolve('iveco daily')).confident, true)
+  // Id helpers.
+  assert.equal((await local.byId('van/iveco/35s')).id, 'van/iveco/daily')
+  assert.equal(await local.byId('van/iveco/35s', { follow: false }), null)
+  assert.equal(await local.byId('van/iveco/daily', { kinds: ['car'] }), null)
+  assert.equal(await local.successor('VAN/iveco/35s'), 'van/iveco/daily')
+  assert.equal(await local.successor('bus/iveco/daily'), 'bus/iveco/daily')
+  assert.equal(await local.successor('car/nope/nope'), null)
+})
+
+test('make former slugs land on the successor make', async () => {
+  const local = client({ version: '1', kinds: ['truck'], makes: [
+    { name: 'Renault', slug: 'renault', kinds: ['truck'], former_slugs: ['renault-trucks'], models: [{ name: 'Master', slug: 'master', kind: 'truck' }] }
+  ] })
+  const r = await local.modelMatch('Renault Trucks', 'Master')
+  assert.equal(r.id, 'truck/renault/master')
+  assert.ok(r.via.includes('former_make_slug:renault trucks→renault'))
+  assert.equal((await local.models('renault-trucks')).length, 1)
 })

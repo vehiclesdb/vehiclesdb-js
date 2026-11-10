@@ -11,7 +11,13 @@ import client from './index.cjs'
 export const VehiclesDB = client.VehiclesDB
 export const VehiclesDBError = client.VehiclesDBError
 export const VehiclesDBApiError = client.VehiclesDBApiError
+export const VehiclesDBAuthError = client.VehiclesDBAuthError
+export const VehiclesDBPaymentRequiredError = client.VehiclesDBPaymentRequiredError
+export const VehiclesDBRateLimitError = client.VehiclesDBRateLimitError
+export const VehiclesDBNotFoundError = client.VehiclesDBNotFoundError
+export const VehiclesDBTimeoutError = client.VehiclesDBTimeoutError
 export const VehiclesDBConfigError = client.VehiclesDBConfigError
+export const KIND_PRECEDENCE = client.KIND_PRECEDENCE
 export const ATTRIBUTION = client.ATTRIBUTION
 export const normalize = client.normalize
 

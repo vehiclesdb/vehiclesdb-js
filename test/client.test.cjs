@@ -24,10 +24,13 @@ const esm = import('../index.mjs')
 test('the CJS entry point exports the documented surface', () => {
   assert.deepEqual(
     Object.keys(cjs).sort(),
-    ['ATTRIBUTION', 'VehiclesDB', 'VehiclesDBApiError', 'VehiclesDBConfigError', 'VehiclesDBError', 'normalize']
+    ['ATTRIBUTION', 'KIND_PRECEDENCE', 'VehiclesDB', 'VehiclesDBApiError', 'VehiclesDBAuthError', 'VehiclesDBConfigError',
+      'VehiclesDBError', 'VehiclesDBNotFoundError', 'VehiclesDBPaymentRequiredError', 'VehiclesDBRateLimitError',
+      'VehiclesDBTimeoutError', 'normalize']
   )
   assert.equal(typeof cjs.VehiclesDB, 'function')
-  for (const method of ['makes', 'models', 'model', 'resolve', 'search', 'images', 'datasetVersion']) {
+  for (const method of ['makes', 'models', 'model', 'resolve', 'search', 'images', 'datasetVersion', 'byId', 'successor',
+    'catalog', 'colors', 'colorOptions', 'color', 'kindLabel', 'bodyTypeLabel']) {
     assert.equal(typeof cjs.VehiclesDB.prototype[method], 'function', method)
   }
   // Endpoints that have not shipped must NOT be here — a method that throws
