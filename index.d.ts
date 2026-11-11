@@ -154,7 +154,7 @@ export interface Resolution {
   readonly resolvedVia: readonly string[]
 }
 
-/** One rendered variant of a vehicle image. */
+/** One size variant of a vehicle image. */
 export interface ImageVariant {
   /** Signed and key-free — safe to put straight into `<img src>`. */
   readonly url: string
@@ -169,11 +169,11 @@ export interface ImageVariant {
  */
 export interface VehicleImages {
   readonly id: string
-  /** The color actually SERVED (un-rendered colors fall back honestly). */
+  /** The color actually SERVED (colors without an image fall back honestly). */
   readonly color: string
   /** The color you asked for. Compare with `color` to detect a fallback. */
   readonly requested_color: string
-  /** Colors actually rendered for this model. */
+  /** Colors this model has images in. */
   readonly palette: readonly string[]
   readonly variants: {
     readonly sm: ImageVariant
@@ -329,7 +329,7 @@ export class VehiclesDBConfigError extends VehiclesDBError {
 export class VehiclesDBApiError extends VehiclesDBError {
   readonly name: string
   readonly status: number
-  /** The server's own body, parsed — e.g. `{ error: 'no_render', id: '…' }`. */
+  /** The server's own body, parsed — e.g. `{ error: 'no_image', id: '…' }`. */
   readonly body: unknown
   readonly url: string
   readonly method: string

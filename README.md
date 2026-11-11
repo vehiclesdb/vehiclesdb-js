@@ -240,7 +240,7 @@ const { VehiclesDBError, VehiclesDBApiError, VehiclesDBAuthError, VehiclesDBPaym
   (`'apiKey'`, `'fetch'`).
 - `VehiclesDBApiError` — any non-2xx, from the CDN or from the API. Carries
   `.status`, the server's own parsed `.body`, and `.code` (the body's `error`
-  string, e.g. `'no_render'`, `'unknown_color'`). Subclasses for the statuses
+  string, e.g. `'no_image'`, `'unknown_color'`). Subclasses for the statuses
   you handle differently:
   - `VehiclesDBAuthError` — 401/403: missing, invalid or revoked key, or a
     publishable key used from a site it is not allowed on.
@@ -248,8 +248,9 @@ const { VehiclesDBError, VehiclesDBApiError, VehiclesDBAuthError, VehiclesDBPaym
     is empty; `.body.billing_url` says where to top up.
   - `VehiclesDBRateLimitError` — 429 `rate_limited`; `.retryAfter` in seconds.
   - `VehiclesDBNotFoundError` — 404 (`not_found`; for images `unknown_model`
-    when the id is not in the API's dataset, `no_render` when the vehicle has
-    no render yet, `color_not_rendered` with `fallback=none`; read `.code`).
+    when the id is not in the API's dataset, `no_image` when the vehicle has
+    no image yet, `color_not_available` when that exact color was requested
+    with `fallback=none` and is not available; read `.code`).
 - `VehiclesDBTimeoutError` — no response within `timeout` ms (`.timeout`, `.url`).
 - `VehiclesDBError` — the base class, and what any other network failure
   becomes (with the original error as `.cause`).
@@ -259,7 +260,7 @@ try {
   await db.images('car/volkswagen/passat')
 } catch (error) {
   if (error instanceof VehiclesDBNotFoundError) {
-    // no render for this model yet — show your placeholder
+    // no image for this model yet — show your placeholder
   } else if (error instanceof VehiclesDBAuthError || error instanceof VehiclesDBPaymentRequiredError) {
     // alert someone: every image call will fail until the key or wallet is fixed
   } else throw error
