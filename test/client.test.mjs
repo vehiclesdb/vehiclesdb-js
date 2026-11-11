@@ -560,7 +560,7 @@ test('images() sends a bearer token to the documented path and parses the 200 bo
 test('images() surfaces the documented error bodies as VehiclesDBApiError', async () => {
   const missing = apiFetch(() => ({
     status: 404,
-    body: { error: 'no_render', id: 'car/volkswagen/passat' }
+    body: { error: 'no_image', id: 'car/volkswagen/passat' }
   }))
   await assert.rejects(
     () => new VehiclesDB({ apiKey: 'k', fetch: missing }).images('car/volkswagen/passat'),
@@ -568,8 +568,8 @@ test('images() surfaces the documented error bodies as VehiclesDBApiError', asyn
       assert.ok(error instanceof VehiclesDBApiError)
       assert.ok(error instanceof VehiclesDBError)
       assert.equal(error.status, 404)
-      assert.deepEqual(error.body, { error: 'no_render', id: 'car/volkswagen/passat' })
-      assert.match(error.message, /no_render/)
+      assert.deepEqual(error.body, { error: 'no_image', id: 'car/volkswagen/passat' })
+      assert.match(error.message, /no_image/)
       return true
     }
   )
@@ -594,7 +594,7 @@ test('API errors are typed by status and carry the machine-readable code', async
   const cases = [
     [401, { error: 'invalid_token' }, VehiclesDBAuthError, undefined],
     [402, { error: 'insufficient_credits', billing_url: 'https://vehiclesdb.com/billing' }, VehiclesDBPaymentRequiredError, undefined],
-    [404, { error: 'no_render', id: 'car/renault/clio' }, VehiclesDBNotFoundError, undefined],
+    [404, { error: 'no_image', id: 'car/renault/clio' }, VehiclesDBNotFoundError, undefined],
     [429, { error: 'rate_limited', retry_after: 60 }, VehiclesDBRateLimitError, { 'retry-after': '30' }],
     [422, { error: 'unknown_color' }, VehiclesDBApiError, undefined]
   ]

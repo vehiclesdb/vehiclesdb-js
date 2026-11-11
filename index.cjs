@@ -155,7 +155,7 @@ class VehiclesDBConfigError extends VehiclesDBError {
  * Any non-2xx HTTP response, from the CDN or from the API. Carries the raw
  * `status`, the parsed `body` and the API's machine-readable `code`
  * (`body.error`: `invalid_token`, `insufficient_credits`, `rate_limited`,
- * `unknown_model`, `no_render`, `unknown_color`, …) so a caller can branch without parsing
+ * `unknown_model`, `no_image`, `unknown_color`, …) so a caller can branch without parsing
  * messages. The subclasses below cover the statuses an integration must
  * handle differently; anything else stays a plain VehiclesDBApiError.
  */
@@ -196,7 +196,7 @@ class VehiclesDBRateLimitError extends VehiclesDBApiError {
   }
 }
 
-/** 404: nothing to serve (`not_found`, `unknown_model`, `no_render`, `color_not_rendered`; read `code`). */
+/** 404: nothing to serve (`not_found`, `unknown_model`, `no_image`, `color_not_available`; read `code`). */
 class VehiclesDBNotFoundError extends VehiclesDBApiError {
   constructor(message, details) {
     super(message, details)
@@ -884,7 +884,7 @@ class VehiclesDB {
   // --- API mode ------------------------------------------------------------
 
   /**
-   * Rendered imagery for one model
+   * Images for one model
    * (`GET /api/v1/vehicles/{kind}/{make}/{model}/images`). API only: there is no
    * imagery in the open dataset, so this throws without an `apiKey` rather
    * than returning a fake.
@@ -1011,7 +1011,7 @@ class VehiclesDB {
     }
 
     if (!response.ok) {
-      // Keep the server's own error shape intact — `{"error":"no_render","id":…}`
+      // Keep the server's own error shape intact — `{"error":"no_image","id":…}`
       // tells a caller far more than any message we could synthesize.
       const code = body && typeof body === 'object' && typeof body.error === 'string' ? body.error : null
       const ErrorClass = API_ERRORS[response.status] || VehiclesDBApiError
